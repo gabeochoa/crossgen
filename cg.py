@@ -1,18 +1,20 @@
 # This Python file uses the following encoding: utf-8
 import sys
 import json
-from random import random
+from random import random, shuffle
+from collections import defaultdict
 
 
 spacechar = u'███'
 _end = '_end_'
+alpha = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
 class Trie(object):
     """docstring for Trie"""
-    def __init__(self, fn):
+    def __init__(self, words):
         super(Trie, self).__init__()
         self.dictionary = dict()
-        self._build_tree(fn)
+        self._build_tree(words)
 
     def _get_fully(self, word):
         '''
@@ -62,7 +64,7 @@ class Trie(object):
             return False
         return self.find_in(word[1:], d=d[word[0]])
 
-    def _build_tree(self, fn):
+    def _build_tree_from_file(self, fn):
         with open(fn) as f:
             lines = f.readlines()
         self.lines = lines[:100]
@@ -70,18 +72,71 @@ class Trie(object):
             self.add_trie(word.strip())
         self.seed = self.get_random_word()
 
+    def _build_tree(self, words):
+        self.lines = words
+        for word in self.lines:
+            self.add_trie(word.strip())
+        self.seed = self.get_random_word()
+
     def get_random_word(self):
         return self.lines[int(random()*len(self.lines))].strip()
 
-    def get_word(self, chars):
-        return self.get_random_word()
+    def _get_word_from_subset(self, subset):
+        output = ""
+        x = int(random()*len(subset.keys()))
+        while subset[subset.keys()[x]] != _end:
+            subset_k = subset.keys()[x]
+            output += subset_k
+            subset = subset[subset_k]
+            x = int(random()*len(subset.keys()))
+        return output
+
+    def get_word(self, chars, used=[]):
+        # get random letter to branch off of
+        orig = chars
+        chars = list(chars)
+        shuffle(chars)
+        i = 0
+        rlet = chars[i]
+        cont = None
+        while cont is None:
+        #     print "letter chosen: :", rlet
+        #     print "index: ", orig.index(rlet)
+            subset = self.dictionary.get(rlet, None)
+            if subset is None:
+                cont = None
+                if i > len(chars):
+                    return # ran out of letters to try
+                i += 1
+                rlet = chars[i]
+                continue # retry with a different letter
+            else:
+                out = rlet + self._get_word_from_subset(subset), orig.index(rlet)
+                if out in used:
+                    print "word already used"
+                    return None
+                return out
+        return None
 
 class Puzzle():
     def __init__(self, size):
-        self.trie = Trie("words_alpha.txt")
+        self.clues_for_word = self._build_clues_dict("clues.txt")
+        self.trie = Trie(self.clues_for_word.keys())
         self.seed = self.trie.seed
         self.data = [[spacechar for _ in range(size)] for _ in range(size)]
         self.size = size
+        self.empty = size * size
+        self.words_used = []
+
+    def _build_clues_dict(self, fn):
+        ret = defaultdict(list)
+        with open(fn, 'r') as f:
+            lines = f.readlines()
+        lines = lines[:1000]
+        for l in lines:
+            clue, word = l.split("\t")[:2]
+            ret[word] += [clue]
+        return ret
 
     def draw(self):
         out = ""
@@ -94,24 +149,68 @@ class Puzzle():
             out += '\n'
         print out
 
-
-    def place_word(self, x, y, word, orient):
+    def check_place(self, x, y, word, orient):
         if(orient==1 and x+len(word) <= self.size):
             for i in range(len(word)):
-                self.data[x+i][y] = ' '+word[i]+' '
-            return 1, (x, y, word)
+                if self.data[x+i][y] != word[i]:
+                    continue
+                if self.data[x+i][y] != spacechar:
+                    print self.data[x][y+i], word[i]
+                    return False
         elif(orient==-1 and y+len(word) <= self.size):
             for i in range(len(word)):
-                self.data[x][y+i] = ' '+word[i]+' '
-            return -1, (x, y, word)
+                if self.data[x][y+i] != word[i]:
+                    continue
+                if self.data[x][y+i] != spacechar:
+                    print self.data[x][y+i], word[i]
+                    return False
+        return True
 
-        print "couldnt fit", x, y, word
+    def place_word(self, x, y, word, orient):
+        try:
+            if not self.check_place(x, y, word, orient):
+                print "couldnt fit", x, y, word
+                return 0, ()
+        except:
+            return 0, ()
+
+        if(orient==1 and x+len(word) <= self.size):
+            for i in range(len(word)):
+                let = ' '+word[i]+' '
+                if let == self.data[x+i][y]:
+                    continue
+                self.data[x+i][y] = let
+                self.empty -= 1
+            # placed word correctly
+            self.words_used.append(word)
+            return orient, (x, y, word)
+        elif(orient==-1 and y+len(word) <= self.size):
+            for i in range(len(word)):
+                let = ' '+word[i]+' '
+                if let == self.data[x][y+i]:
+                    continue
+                self.data[x][y+i] = let
+                self.empty -= 1
+            # placed word correctly
+            self.words_used.append(word)
+            return orient, (x, y, word)
+
         return 0, ()
 
     def make(self):
+        a = None
+        b = None
+        prev = None
+        orient= None
+
         while True:
-            success, data = self.next()
-            if success != 0:
+            success, data = self.next(a=a, b=b, prev=prev, orient=orient)
+            if success == 0:
+                return success, data
+            print success, data, self.empty
+            a, b, prev = data
+            orient = success
+            if self.empty < 20:
                 return success, data
 
 
@@ -125,11 +224,19 @@ class Puzzle():
         if orient is None:
             orient = 1
 
-        word = self.trie.get_word(prev)
-        success, data = self.place_word(a, b, word, orient=orient)
+        new_orient = orient * -1
+
+        word, pos = self.trie.get_word(prev, self.words_used)
+        if orient == 1:
+            a += pos
+        else:
+            b += pos
+        print a, b, word, new_orient
+        success, data = self.place_word(a, b, word, orient=new_orient)
         if success != 0:
             return success, data
         else:
+            print "no success"
             return 0, ()
 
 def main():
@@ -139,11 +246,7 @@ def main():
         size = int(sys.argv[1])
 
     puzz = Puzzle(size)
-    orient, start = puzz.make()
-    print start
-    x, y, prev = start
-    puzz.next(a=x, b=y, prev=prev, orient=orient*-1)
-
+    puzz.make()
     puzz.draw()
 
 if __name__ == '__main__':
